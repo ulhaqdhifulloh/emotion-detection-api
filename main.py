@@ -95,23 +95,29 @@ def load_checkpoint(path: str):
 # Catatan: verifikasi checksum dihapus untuk kesederhanaan.
 
 def ensure_checkpoint() -> str:
-    """Pastikan checkpoint tersedia: gunakan cache di /home dan unduh sekali.
+    """Pastikan checkpoint tersedia.
 
-    Perilaku:
-    - Jika file sudah ada di DOWNLOAD_CKPT, pakai langsung (startup cepat).
-    - Jika belum ada dan MODEL_URL diset, unduh ke DOWNLOAD_CKPT lalu tulis meta.
-    - Jika gagal, raise error.
+    Urutan prioritas:
+    - Jika file cache ada di `DOWNLOAD_CKPT`, gunakan itu (startup cepat/persisten).
+    - Jika tidak ada, cek model lokal yang dibundel di image (`LOCAL_CKPT`).
+    - Jika masih tidak ada dan `MODEL_URL` diset, unduh ke `DOWNLOAD_CKPT`.
+    - Jika semua gagal, raise error.
     """
     out_dir = MODEL_DIR
     os.makedirs(out_dir, exist_ok=True)
     meta_file = os.path.join(out_dir, "model.meta")
 
-    # Pakai file cached jika sudah ada
+    # 1) Pakai file cached jika sudah ada
     if os.path.exists(DOWNLOAD_CKPT):
         print(f"[startup] Using cached model: {DOWNLOAD_CKPT}")
         return DOWNLOAD_CKPT
 
-    # Unduh dari MODEL_URL jika tersedia
+    # 2) Jika image membundel checkpoint lokal, gunakan itu
+    if os.path.exists(LOCAL_CKPT):
+        print(f"[startup] Using local bundled model: {LOCAL_CKPT}")
+        return LOCAL_CKPT
+
+    # 3) Unduh dari MODEL_URL jika tersedia
     if MODEL_URL:
         try:
             print(f"[startup] Downloading model from {MODEL_URL} ...")
