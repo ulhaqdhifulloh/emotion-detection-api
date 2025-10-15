@@ -1,0 +1,4 @@
+.env
+render.yaml
+__pycache__
+cnn_emotion_model_v6-2.pth
