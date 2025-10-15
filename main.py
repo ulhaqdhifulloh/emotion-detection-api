@@ -1,7 +1,6 @@
 # main.py
 import io
 import os
-import json
 import time
 from typing import List, Optional, Dict, Any
 
@@ -13,6 +12,7 @@ from torchvision import models, transforms
 from PIL import Image
 import cv2
 import urllib.request
+import uvicorn 
 
 from fastapi import FastAPI, File, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -91,65 +91,39 @@ def load_checkpoint(path: str):
     model.eval()
     return model, class_names
 
-def resolve_hf_url(url: str) -> str:
-    """Normalisasi URL unduh langsung (mis. Hugging Face 'blob'→'resolve')."""
-    if url and "huggingface.co" in url and "/blob/" in url:
-        return url.replace("/blob/", "/resolve/")
-    return url
-
-def _meta_path(out_dir: str) -> str:
-    return os.path.join(out_dir, ".ckpt_meta.json")
-
-def _read_meta(out_dir: str) -> dict | None:
-    mp = _meta_path(out_dir)
-    if os.path.isfile(mp):
-        try:
-            with open(mp, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
-    return None
-
-def _write_meta(out_dir: str, meta: dict) -> None:
-    try:
-        with open(_meta_path(out_dir), "w", encoding="utf-8") as f:
-            json.dump(meta, f)
-    except Exception as e:
-        print(f"[startup] Gagal menulis meta: {e}")
 
 # Catatan: verifikasi checksum dihapus untuk kesederhanaan.
 
 def ensure_checkpoint() -> str:
-    """Gunakan checkpoint lokal bila tersedia, jika tidak unduh dari MODEL_URL.
+    """Pastikan checkpoint tersedia: gunakan cache di /home dan unduh sekali.
 
-    Urutan preferensi:
-    1) Lokal: 'cnn_emotion_model_v6-2.pth' di folder render-deploy
-    2) Unduh: dari MODEL_URL ke 'model.pth' di folder render-deploy
-    3) Error: bila keduanya tidak tersedia
+    Perilaku:
+    - Jika file sudah ada di DOWNLOAD_CKPT, pakai langsung (startup cepat).
+    - Jika belum ada dan MODEL_URL diset, unduh ke DOWNLOAD_CKPT lalu tulis meta.
+    - Jika gagal, raise error.
     """
-    out_dir = DEPLOY_DIR
+    out_dir = MODEL_DIR
     os.makedirs(out_dir, exist_ok=True)
+    meta_file = os.path.join(out_dir, "model.meta")
 
-    # 1) Pakai file lokal jika ada
-    if os.path.isfile(LOCAL_CKPT):
-        return LOCAL_CKPT
+    # Pakai file cached jika sudah ada
+    if os.path.exists(DOWNLOAD_CKPT):
+        print(f"[startup] Using cached model: {DOWNLOAD_CKPT}")
+        return DOWNLOAD_CKPT
 
-    # 2) Unduh via MODEL_URL jika diset
+    # Unduh dari MODEL_URL jika tersedia
     if MODEL_URL:
-        url = resolve_hf_url(MODEL_URL)
         try:
-            urllib.request.urlretrieve(url, DOWNLOAD_CKPT)
-            _write_meta(out_dir, {
-                "source": "url",
-                "model_url": MODEL_URL,
-                "checkpoint_path": DOWNLOAD_CKPT,
-            })
+            print(f"[startup] Downloading model from {MODEL_URL} ...")
+            urllib.request.urlretrieve(MODEL_URL, DOWNLOAD_CKPT)
+            with open(meta_file, "w", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S"))
+            print(f"[startup] Model downloaded to {DOWNLOAD_CKPT}")
             return DOWNLOAD_CKPT
         except Exception as e:
-            print(f"[startup] Gagal unduh dari MODEL_URL: {e}")
+            raise RuntimeError(f"Gagal download model: {e}")
 
-    # 3) Jika semua gagal
-    raise RuntimeError("Checkpoint tidak ditemukan. Letakkan 'cnn_emotion_model_v6-2.pth' di folder ini atau set MODEL_URL.")
+    raise RuntimeError("MODEL_URL tidak diset dan model lokal tidak ditemukan.")
 
 # Transform & Face crop
 val_tf = transforms.Compose([
@@ -246,9 +220,12 @@ def predict_single(model: nn.Module, pil_img: Image.Image, class_names: List[str
 async def lifespan(app: FastAPI):
     # Muat model sekali saat startup
     global MODEL, CLASS_NAMES, CURRENT_CKPT
+    print("[startup] Loading checkpoint ...")
     ckpt_path = ensure_checkpoint()
+    print(f"[startup] Using checkpoint: {ckpt_path}")
     CURRENT_CKPT = ckpt_path
     MODEL, CLASS_NAMES = load_checkpoint(ckpt_path)
+    print("[startup] Model loaded successfully.")
     yield
     # Bersih-bersih sederhana
     MODEL = None
@@ -370,5 +347,5 @@ def predict_batch_endpoint(
     return BatchResponse(items=items)
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "3003")))
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
